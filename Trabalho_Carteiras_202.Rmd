@@ -1,0 +1,216 @@
+---
+title: "Análise do portfolio de 3 ativos- MINERAÇÃO (6)"
+author:
+output: html_document
+---
+
+```{r setup, include=FALSE}
+##Carregando bibliotecas necessárias
+library(quantmod)
+library(TTR)
+library(pander)
+library(PerformanceAnalytics)
+library(ROI)
+library(PortfolioAnalytics)
+library(ROI.plugin.quadprog)
+library(ggplot2)
+library(fPortfolio)
+library(rvest)
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+```
+
+```{r selic1, echo = FALSE}
+url <- "https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/pagamentos-e-parcelamentos/taxa-de-juros-selic#Selicmensalmente"
+pagina <- read_html(url)
+tabelas <- html_table(pagina, fill = TRUE)
+
+df1 <- tabelas[[4]]
+colnames(df1) <- df1[1, ]
+df1 <- df1[-1, ]
+df1$ordem <- seq_len(nrow(df1))
+
+df2 <- tabelas[[3]]
+colnames(df2) <- df2[1, ]
+df2 <- df2[-1, ]
+
+df3 <- tabelas[[2]]
+colnames(df3) <- df3[1, ]
+df3 <- df3[-1, ]
+
+colnames(df1)[1] <- "mes_ano"
+colnames(df2)[1] <- "mes_ano"
+colnames(df3)[1] <- "mes_ano"
+
+
+df_merged <- merge(df1, df2, by = "mes_ano", all = TRUE)
+df_merged <- df_merged[order(df_merged$ordem), ]
+df_final <- merge(df_merged, df3, by = "mes_ano", all = TRUE)
+df_final <- df_final[order(df_final$ordem), ]
+df_final$ordem <- NULL
+df_final[c("2004", "2005", "2006", "2007", "2008", "2009", "2021", "2022", "2023", "2024")] <- NULL
+
+# Limpeza de dados
+
+df_final[, -1] <- lapply(df_final[, -1], function(x) gsub(",", ".", x))
+df_final[, -1] <- lapply(df_final[, -1], function(x) as.numeric(gsub("[^0-9.-]", "", x)))
+df_medias <- data.frame(Média = colMeans(df_final[, -1], na.rm = TRUE))
+selic_mensal <- 0.00734
+```
+
+#### Coleta de Dados dos Ativos
+
+```{r ativos1, echo = TRUE}
+getSymbols(c("^BVSP", "ABEV3.SA", "ANIM3.SA", "BBAS3.SA", "BPAN4.SA", "B3SA3.SA", "BBSE3.SA",
+             "BBDC3.SA", "BBDC4.SA", "BRKM3.SA", "KLBN11.SA", "CSAN3.SA",
+             "CPFE3.SA", "ENGI11.SA", "EQTL3.SA", "GGBR3.SA", "GGBR4.SA", "ITUB4.SA",
+             "JBSS3.SA", "RENT3.SA", "PETR4.SA", "TIMS3.SA","MGLU3.SA","TOTS3.SA", "MRVE3.SA", "CCRO3.SA", 
+             "EGIE3.SA", "PCAR3.SA", "QUAL3.SA", "EMBR3.SA", "CMIG4.SA","PRIO3.SA", "VALE3.SA","MTIG3.SA"),
+           src = "yahoo", periodicity = "monthly", from = "2010-01-01", to = "2020-10-31")
+
+retorno = do.call ("merge.xts", lapply(list(BVSP,VALE3.SA,MTIG3.SA,GGBR3.SA),Ad))
+names(retorno) = c("BVSP","VALE3.SA","MTIG3.SA","GGBR3.SA")
+
+```
+
+#### Análise de Retornos
+
+```{r retornos1, echo = TRUE}
+prum <- lag(retorno) ## preços defazados
+retorno1 <- retorno[-1,] ## primeira unidade é eliminada ##
+retornoshis <- (retorno1/prum-1) ## retorno histórico ##
+retornoshiSemIbovs <- retornoshis[, !colnames(retornoshis) %in% "BVSP"]
+resp1 = apply(retornoshis, 2, mean, ) ## Retorno médio
+resp <- apply(retornoshis[, !colnames(retornoshis) %in% "BVSP"], 2, mean) # Retirando o IBOVESPA
+retorno_medio = resp*100 ## retorno médio ajustado a porcentagem
+resp1 <- resp1["BVSP"]
+retornom <- data.frame(retorno_medio)
+pander(retornom, split.table = Inf)
+```
+
+
+```{r risco_retornoIbov1, echo = TRUE}
+bvsp_column <- resp1["BVSP"]
+bvsp_risk <- sd(retornoshis$BVSP)
+risco_retorno_bvsp <- data.frame(risco = bvsp_risk, retorno = bvsp_column)
+```
+#### Matriz de covariância e correlação do Portfólio 6
+
+```{r risco_retornopt1, echo = TRUE}
+cov1 <- cov(retornoshiSemIbovs[,], use = 'pairwise.complete.obs')
+correl1 <- cor(retornoshiSemIbovs[,], use = 'pairwise.complete.obs')
+retornos_medios1 <- colMeans(retornoshiSemIbovs[,])
+
+# Mostrando a tabela de covariância e correlação do Portfólio 1
+
+risco_retorno1 <- data.frame(risco = sqrt(diag(cov1)), retorno = retorno_medio)
+# Matriz de covariância
+pander(cov1, split.table = Inf)
+# Matriz de correlação
+pander(correl1, split.table = Inf)
+```
+
+
+
+```{r carteira_ingenua1, echo = TRUE}
+num_assets <- ncol(retornoshiSemIbovs)
+pesos <- rep(1 / num_assets, num_assets)
+expected_return_naive <- sum(pesos * colMeans(retornoshiSemIbovs, na.rm = TRUE))
+cov_matrix <- cov(retornoshiSemIbovs, use = "pairwise.complete.obs")
+risk_naive <- sqrt(t(pesos) %*% cov_matrix %*% pesos)
+risco_retorno_naive <- data.frame(risco = risk_naive, retorno = expected_return_naive)
+```
+
+
+```{r variancia_minima1, echo = TRUE}
+port_vm <- solve(cov1) %*% rep(1, 3)
+port_vm <- port_vm / sum(port_vm)
+retorno_vm <- sum(port_vm * resp)
+risco_vm <- sqrt(t(port_vm) %*% cov1 %*% port_vm)
+risco_retorno_vm <- data.frame(risco = risco_vm, retorno = retorno_vm)
+```
+
+
+```{r portfolio_tangente1, echo = TRUE}
+port_tg <- solve(cov1) %*% (resp - selic_mensal)
+port_tg <- port_tg / sum(port_tg)
+retorno_tg <- sum(port_tg * resp)
+risco_tg <- sqrt(t(port_tg) %*% cov1 %*% port_tg)
+risco_retorno_tang <- data.frame(risco = risco_tg, retorno = retorno_tg)
+```
+
+#### Gráfico de Risco vs Retorno
+
+```{r grafico_risco_retorno1, echo = TRUE}
+
+plot(risco_retorno1, col = "blue", main = "Risco vs Retorno - Portfólio 1", xlab = "Risco", ylab = "Retorno")
+text(risco_retorno1, labels = rownames(risco_retorno1), pos = 4)
+```
+
+#### Otimização da Fronteira Eficiente
+
+```{r fronteira_eficiente1, echo = TRUE}
+spec <- portfolioSpec()
+setRiskFreeRate(spec) <- selic_mensal
+colnames(retornoshiSemIbovs) <- c("VALE3.SA","MTIG3.SA","GGBR3.SA")
+retornoshis_ts <- as.timeSeries(retornoshiSemIbovs)
+
+
+##retorna o portfólio com a maior relação retorno/risco na fronteira eficiente
+retornoshis_ts <- na.omit(retornoshis_ts)
+p1 <- tangencyPortfolio(data = retornoshis_ts, spec = spec, constraints = "LongOnly")
+
+##retorna o portfólio com o risco mínimo na fronteira eficiente
+p2 = minvariancePortfolio(retornoshis_ts, spec = portfolioSpec(), constraints = "LongOnly")
+
+
+## calculos para obtenção da fronteira eficiente
+Frontier = portfolioFrontier(retornoshis_ts,)
+
+## Plotagem da fronteira eficiente no gráfico
+frontierPlot(Frontier, col = c("blue", "orange"), pch = 16, cex = 1.0)
+
+## Ponto da Carteira de VM
+minVarPoint <- minvariancePoints(Frontier, pch = 17, col = "red", cex = 1.7)
+
+## pontos associados a possíveis carteiras
+p3 = monteCarloPoints(Frontier, mcSteps = 1300, cex = 0.4, pch = 20)
+
+
+## mostrando o local da carteira que com proporções iguais em cada ativo
+equalWeightsPoints <- equalWeightsPoints(Frontier, pch = 18, col = "green", cex = 1.7)
+
+## mostrando os pontos relativos a cada ativo individualmente
+singleAssetPoints(Frontier, pch = 19, cex = 1.5, col = topo.colors(6))
+
+## Ponto da cartiera Tangente
+tangencyPoint <- tangencyPoints(Frontier, pch = 18, col = "purple", cex = 2.3)
+```
+
+#### Tabela Final com Risco, Retorno e Índice de Sharpe
+
+```{r tabela_final1, echo = TRUE}
+uniao <- data.frame(
+  Portfolio = c("Ibovespa", "Ingênua", "Variância Mínima", "Tangente"),
+  Risco = c(bvsp_risk, risk_naive, risco_vm, risco_tg),
+  Retorno = c(resp1["BVSP"], expected_return_naive, retorno_vm, retorno_tg)
+)
+
+selic_mensal <- 0.0373
+indice_sharpe <- (uniao$Retorno - selic_mensal) / uniao$Risco
+resultados <- data.frame(Retorno = uniao$Retorno, Risco = uniao$Risco, Índice_Sharpe = indice_sharpe)
+colnames(resultados) <- c("retorno", "risco", "indice_sharpe") 
+rownames(resultados) <- c("Ibovespa", "Ingênua", "Variância Mínima", "Tangente")
+print(resultados)
+```
+
+
+
+
+
+
+
+
+
+
+
